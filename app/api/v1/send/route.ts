@@ -63,7 +63,7 @@ export async function POST(request: NextRequest) {
     const signatureValid = await verifyRequestSignature(
       'POST',
       '/api/v1/send',
-      {},
+      { configKey },
       nonce,
       timestamp,
       body,

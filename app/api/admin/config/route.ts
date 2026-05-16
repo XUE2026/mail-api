@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
       apiKeys: config.apiKeys.map(k => ({
         ...k,
         key: maskApiKey(k.key),
-        fullKey: k.status === 'active' && k.createdAt > Date.now() - 60000 ? k.key : undefined
+        fullKey: undefined
       }))
     })
   } catch (error) {
@@ -87,6 +87,9 @@ export async function PUT(request: NextRequest) {
         }
         if (!validateEmail(mb.email)) {
           return NextResponse.json({ error: 'Invalid email' }, { status: 400 })
+        }
+        if (!mb.smtpPass || !mb.imapPass) {
+          return NextResponse.json({ error: 'SMTP and IMAP passwords are required' }, { status: 400 })
         }
       }
       

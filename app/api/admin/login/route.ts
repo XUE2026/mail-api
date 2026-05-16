@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { ENV } from '@/lib/env'
-import { validateAdminPassword, validateAdminTotp, checkLoginRateLimit, getAuthError } from '@/lib/security'
+import { validateAdminPassword, validateAdminTotp, checkLoginRateLimit, getAuthError, generateSecureCode } from '@/lib/security'
 import { createSession } from '@/lib/session'
 import { sendNotificationMail } from '@/lib/email'
 import { kv } from '@vercel/kv'
-
-let emergencyCodes: Record<string, { code: string; expires: number; attempts: number }> = {}
 
 export async function POST(request: NextRequest) {
   try {
@@ -29,10 +27,14 @@ export async function POST(request: NextRequest) {
       authenticated = validateAdminPassword(password) && validateAdminTotp(totp)
     } else if (securityLevel === 2) {
       if (emergencyCode) {
-        const stored = emergencyCodes[ip]
-        if (stored && stored.code === emergencyCode && Date.now() < stored.expires && stored.attempts < 3) {
-          stored.attempts++
-          if (stored.attempts >= 3) delete emergencyCodes[ip]
+        const storedData = await kv.get<{ code: string; expires: number; attempts: number }>(`emergency:${ip}`)
+        if (storedData && storedData.code === emergencyCode && Date.now() < storedData.expires && storedData.attempts < 3) {
+          storedData.attempts++
+          if (storedData.attempts >= 3) {
+            await kv.del(`emergency:${ip}`)
+          } else {
+            await kv.set(`emergency:${ip}`, storedData, { ex: 300 })
+          }
           authenticated = true
         }
       } else {
@@ -41,13 +43,13 @@ export async function POST(request: NextRequest) {
         
         if (passwordValid && totpValid) {
           if (emailCode) {
-            const storedCode = await kv.get(`email_code:${ip}`)
+            const storedCode = await kv.get<string>(`email_code:${ip}`)
             if (storedCode === emailCode) {
               await kv.del(`email_code:${ip}`)
               authenticated = true
             }
           } else {
-            const code = Math.random().toString().substring(2, 8)
+            const code = generateSecureCode()
             try {
               await sendNotificationMail(
                 ENV.NOTIFY_EMAIL,
@@ -58,11 +60,11 @@ export async function POST(request: NextRequest) {
               return NextResponse.json({ requiresEmailCode: true })
             } catch {
               const emergency = crypto.randomUUID()
-              emergencyCodes[ip] = {
+              await kv.set(`emergency:${ip}`, {
                 code: emergency,
                 expires: Date.now() + 300000,
                 attempts: 0
-              }
+              }, { ex: 300 })
               return NextResponse.json({
                 requiresEmailCode: true,
                 emergencyAvailable: true,
