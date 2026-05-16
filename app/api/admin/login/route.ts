@@ -27,15 +27,23 @@ export async function POST(request: NextRequest) {
       authenticated = validateAdminPassword(password) && validateAdminTotp(totp)
     } else if (securityLevel === 2) {
       if (emergencyCode) {
-        const storedData = await kv.get<{ code: string; expires: number; attempts: number }>(`emergency:${ip}`)
-        if (storedData && storedData.code === emergencyCode && Date.now() < storedData.expires && storedData.attempts < 3) {
-          storedData.attempts++
-          if (storedData.attempts >= 3) {
-            await kv.del(`emergency:${ip}`)
-          } else {
-            await kv.set(`emergency:${ip}`, storedData, { ex: 300 })
+        const storedData = await kv.get<{ code: string; expires: number }>(`emergency:${ip}`)
+        if (storedData && storedData.code === emergencyCode && Date.now() < storedData.expires) {
+          const attemptsKey = `emergency_attempts:${ip}`
+          const attempts = await kv.incr(attemptsKey)
+          
+          if (attempts === 1) {
+            await kv.expire(attemptsKey, 300)
           }
-          authenticated = true
+          
+          if (attempts <= 3) {
+            authenticated = true
+          }
+          
+          if (attempts >= 3) {
+            await kv.del(`emergency:${ip}`)
+            await kv.del(attemptsKey)
+          }
         }
       } else {
         const passwordValid = validateAdminPassword(password)

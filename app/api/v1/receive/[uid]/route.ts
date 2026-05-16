@@ -87,7 +87,9 @@ export async function GET(
         user: mailbox.imapUser,
         pass: mailbox.imapPass
       },
-      logger: false
+      logger: false,
+      connectionTimeout: 15000,
+      commandTimeout: 10000
     })
     
     await client.connect()

@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { ImapFlow } from 'imapflow'
 import { getValidApiKeys, getConfig } from '@/lib/config'
 import { validateApiTotp, checkNonce, validateTimestamp, verifyRequestSignature, validateConfigKey, getAuthError, checkApiRateLimit } from '@/lib/security'
-
-let lastFetch: Record<string, number> = {}
+import { kv } from '@vercel/kv'
 
 export async function GET(request: NextRequest) {
   try {
@@ -72,11 +71,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(getAuthError(), { status: 401 })
     }
     
+    const rateLimitKey = `ratelimit:receive:${configKey}`
+    const lastFetch = await kv.get<number>(rateLimitKey)
     const now = Date.now()
-    if (lastFetch[configKey] && (now - lastFetch[configKey]) < 10000) {
+    if (lastFetch && (now - lastFetch) < 10000) {
       return NextResponse.json({ error: 'Too many requests, please try again later' }, { status: 429 })
     }
-    lastFetch[configKey] = now
+    await kv.set(rateLimitKey, now, { ex: 60 })
     
     const config = await getConfig()
     const mailbox = config.mailboxes.find(m => m.configKey === configKey)
@@ -95,7 +96,9 @@ export async function GET(request: NextRequest) {
         user: mailbox.imapUser,
         pass: mailbox.imapPass
       },
-      logger: false
+      logger: false,
+      connectionTimeout: 15000,
+      commandTimeout: 10000
     })
     
     await client.connect()
