@@ -5,15 +5,15 @@ A high-security private mail gateway built with Next.js, featuring five-factor A
 ## Security Features
 
 ### Five-Factor API Authentication
-- **API Key**: Identifies the client
+- **API Key**: Identifies the client (stored in KV, encrypted)
 - **TOTP**: 6-digit time-based one-time password (30s validity, ±1 clock drift allowed)
-- **Config Key**: Identifies which mailbox configuration to use
+- **Config Key**: Identifies which mailbox configuration to use (passed via `x-config-key` header)
 - **Request Signature**: HMAC-SHA256 signature of the request
 - **Nonce**: Random string (min 16 chars) with timestamp validation (5 min window)
 
 ### Cryptographic Security
 - **HKDF Key Derivation**: Master key → encryption key + signing key
-- **AES-256-GCM Encryption**: All mailbox credentials encrypted at rest
+- **AES-256-GCM Encryption**: All mailbox credentials encrypted at rest in Vercel KV
 - **HKDF Info Labels**:
   - `aes-encryption-key` for configuration encryption
   - `hmac-signing-key` for request signatures
@@ -25,11 +25,11 @@ A high-security private mail gateway built with Next.js, featuring five-factor A
   - Level 2: Password + TOTP + DNS Emergency Code
 - **CSRF Protection**: Double submit cookie pattern with cryptographically secure tokens
 - **Rate Limiting**: Login attempts limited (5 per 15 min, emergency 3 per hour)
-- **Session Management**: HttpOnly, Secure, SameSite=Strict cookies
+- **Session Management**: HttpOnly, Secure, SameSite=Strict cookies (30 min TTL)
 - **Error Message Obfuscation**: Generic errors prevent user enumeration
 
 ### Network Security
-- **SSRF Protection**: Blocks requests to private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, IPv6 private)
+- **SSRF Protection**: Custom implementation blocking private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, IPv6 private, link-local, etc.)
 - **DNS Emergency Validation**: TXT record challenge for level 2 security fallback
 
 ## Architecture
@@ -108,6 +108,8 @@ Content-Type: application/json
 }
 ```
 
+Response sets session cookie.
+
 #### Logout
 ```
 POST /api/admin/logout
@@ -123,7 +125,6 @@ Returns mailbox configurations (passwords masked) and API keys.
 #### Update Configuration
 ```
 PUT /api/admin/config
-Content-Type: application/json
 X-CSRF-Token: <csrf-token>
 
 {
@@ -152,15 +153,19 @@ Tests TCP connectivity with SSRF protection.
 
 ### Mail API
 
-#### Send Email
+All mail API requests require these headers:
 ```
-POST /api/v1/send
 x-api-key: <api-key>
 x-api-totp: <6-digit-totp>
-x-config-key: <config-key>
+x-config-key: <config-key>   // Mailbox identifier
 x-request-timestamp: <unix-ms-timestamp>
 x-request-nonce: <random-string-min-16-chars>
 x-request-signature: <hmac-sha256-signature>
+```
+
+#### Send Email
+```
+POST /api/v1/send
 Content-Type: application/json
 
 {
@@ -173,22 +178,12 @@ Content-Type: application/json
 
 #### Receive Email List
 ```
-GET /api/v1/receive?configKey=<config-key>&limit=10&page=1
-x-api-key: <api-key>
-x-api-totp: <6-digit-totp>
-x-request-timestamp: <unix-ms-timestamp>
-x-request-nonce: <random-string-min-16-chars>
-x-request-signature: <hmac-sha256-signature>
+GET /api/v1/receive?limit=10&page=1
 ```
 
 #### Receive Single Email
 ```
-GET /api/v1/receive/<uid>?configKey=<config-key>
-x-api-key: <api-key>
-x-api-totp: <6-digit-totp>
-x-request-timestamp: <unix-ms-timestamp>
-x-request-nonce: <random-string-min-16-chars>
-x-request-signature: <hmac-sha256-signature>
+GET /api/v1/receive/<uid>
 ```
 
 ### Signature Calculation
@@ -198,13 +193,16 @@ const stringToSign = `${method}\n${path}\n${sortedQueryString}\n${nonce}\n${time
 const signature = hmacSHA256(stringToSign, signingKey).toString('hex')
 ```
 
+Where:
 - `method`: HTTP method (GET, POST, etc.)
-- `path`: Request path including query string
-- `sortedQueryString`: Query parameters sorted alphabetically
+- `path`: Request path including query string (e.g., `/api/v1/receive?configKey=mykey&limit=10`)
+- `sortedQueryString`: Query parameters sorted alphabetically (including configKey)
 - `nonce`: Random string, minimum 16 characters
 - `timestamp`: Unix timestamp in milliseconds
 - `body`: Request body as string (empty string for GET)
 - `signingKey`: Derived from master key via HKDF
+
+**Important**: The configKey parameter must be included in the signature calculation as part of the query string.
 
 ## API Key Management
 
@@ -220,7 +218,7 @@ Each mailbox configuration includes:
 
 | Field | Description |
 |-------|-------------|
-| `configKey` | Unique identifier for the mailbox |
+| `configKey` | Unique identifier for the mailbox (alphanumeric, underscore, hyphen) |
 | `email` | Email address |
 | `smtpHost` | SMTP server hostname |
 | `smtpPort` | SMTP port (587 for STARTTLS, 465 for SSL) |
@@ -248,8 +246,8 @@ When level 2 security is enabled and notification email fails:
 |----------|-------|--------|
 | Admin Login | 5 attempts | 15 minutes |
 | Emergency Login | 3 attempts | 1 hour |
-| API Requests | 100 requests | 1 minute |
-| Receive Mail | 10 requests | 1 minute |
+| API Requests (per key) | 10 requests | 1 minute |
+| Receive Mail (per configKey) | 1 request | 10 seconds |
 
 ## Important Notice
 
@@ -270,26 +268,39 @@ API keys have full access to all configured mailboxes. This gateway is designed 
 ```
 /app
   /admin
-    /page.tsx         # Admin dashboard
+    /page.tsx              # Admin dashboard
   /api
     /admin
-      /login/route.ts     # Admin login
-      /logout/route.ts    # Admin logout
-      /config/route.ts    # Configuration management
-      /health/route.ts    # Health check
-      /connectivity/route.ts  # Connectivity test
+      /login/route.ts          # Admin login
+      /logout/route.ts         # Admin logout
+      /config/route.ts         # Configuration management
+      /health/route.ts         # Health check
+      /connectivity/route.ts   # Connectivity test
     /v1
-      /send/route.ts      # Send email
-      /receive/route.ts   # List emails
+      /send/route.ts           # Send email
+      /receive/route.ts        # List emails
       /receive/[uid]/route.ts  # Get single email
 /lib
-  /crypto.ts          # Encryption utilities
-  /security.ts       # TOTP, signature validation
-  /session.ts         # Session & CSRF management
-  /config.ts          # KV configuration storage
-  /ssrf.ts            # SSRF protection
-  /email.ts           # SMTP sending
-  /health.ts          # TCP connectivity check
-  /env.ts             # Environment variables
-  /types.ts           # TypeScript interfaces
+  /crypto.ts            # Encryption, key derivation, API key generation
+  /security.ts         # TOTP, signature validation, rate limiting, nonce
+  /session.ts          # Session & CSRF management
+  /config.ts           # KV configuration storage (encrypted)
+  /ssrf.ts             # SSRF protection (custom implementation)
+  /email.ts            # Notification email sending
+  /health.ts           # TCP connectivity check
+  /env.ts              # Environment variables validation
+  /types.ts            # TypeScript interfaces
 ```
+
+## KV Storage Keys
+
+| Key Pattern | Description |
+|-------------|-------------|
+| `config:email_configs` | Encrypted mailbox and API key configuration |
+| `config:version` | Configuration version number for cache invalidation |
+| `session:<id>` | Session data with CSRF token (30 min TTL) |
+| `ratelimit:login:<ip>` | Login rate limit counter |
+| `ratelimit:api:<key>` | API rate limit counter (per key) |
+| `ratelimit:receive:<configKey>` | Receive mail rate limit (per mailbox) |
+| `nonce:<nonce>` | Used nonce storage (15 min TTL) |
+| `emergency:<code>` | Emergency login attempt counter |

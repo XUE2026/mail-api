@@ -1,6 +1,8 @@
-export function getEnv(name: string, required = true): string {
+const isBuildTime = process.env.NODE_ENV === 'production' && !process.env.ADMIN_PASSWD
+
+function getEnv(name: string, required = true): string {
   const value = process.env[name]
-  if (required && !value) {
+  if (required && !value && !isBuildTime) {
     throw new Error(`Missing required environment variable: ${name}`)
   }
   return value || ''

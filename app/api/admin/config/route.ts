@@ -42,7 +42,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
     
-    const requestCsrf = request.headers.get('x-csrf-token')
+    const requestCsrf = request.headers.get('x-csrf-token') || undefined
     if (!validateCsrfToken(requestCsrf, csrfToken)) {
       return NextResponse.json({ error: 'Invalid CSRF token' }, { status: 403 })
     }

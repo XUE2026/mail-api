@@ -15,8 +15,7 @@
     "react-dom": "^18.2.0",
     "otplib": "^12.0.1",
     "nodemailer": "^6.9.9",
-    "imapflow": "^1.0.154",
-    "ssrf-filter": "^2.8.1"
+    "imapflow": "^1.0.154"
   },
   "devDependencies": {
     "@types/node": "^20",
