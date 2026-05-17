@@ -3,6 +3,9 @@ import { ImapFlow } from 'imapflow'
 import { getValidApiKeys, getConfig } from '@/lib/config'
 import { validateApiTotp, checkNonce, validateTimestamp, verifyRequestSignature, validateConfigKey, getAuthError, checkApiRateLimit } from '@/lib/security'
 
+export const runtime = 'nodejs'
+export const maxDuration = 60
+
 export async function GET(
   request: NextRequest,
   { params }: { params: { uid: string } }
@@ -10,11 +13,12 @@ export async function GET(
   try {
     const apiKey = request.headers.get('x-api-key')
     const apiTotp = request.headers.get('x-api-totp')
+    const configKey = request.headers.get('x-config-key')
     const nonce = request.headers.get('x-request-nonce')
     const timestamp = request.headers.get('x-request-timestamp')
     const signature = request.headers.get('x-request-signature')
     
-    if (!apiKey || !apiTotp || !nonce || !timestamp || !signature) {
+    if (!apiKey || !apiTotp || !configKey || !nonce || !timestamp || !signature) {
       return NextResponse.json(getAuthError(), { status: 401 })
     }
     
@@ -27,6 +31,10 @@ export async function GET(
     }
     
     if (!validateApiTotp(apiTotp)) {
+      return NextResponse.json(getAuthError(), { status: 401 })
+    }
+    
+    if (!validateConfigKey(configKey)) {
       return NextResponse.json(getAuthError(), { status: 401 })
     }
     
@@ -49,14 +57,11 @@ export async function GET(
     }
     
     const { searchParams } = new URL(request.url)
-    const configKey = searchParams.get('configKey')
-    if (!configKey || !validateConfigKey(configKey)) {
-      return NextResponse.json(getAuthError(), { status: 401 })
-    }
-    
-    const queryObj: Record<string, string> = {}
+    const queryObj: Record<string, string> = { configKey }
     searchParams.forEach((value, key) => {
-      queryObj[key] = value
+      if (key !== 'configKey') {
+        queryObj[key] = value
+      }
     })
     
     const signatureValid = await verifyRequestSignature(
@@ -87,9 +92,7 @@ export async function GET(
         user: mailbox.imapUser,
         pass: mailbox.imapPass
       },
-      logger: false,
-      connectionTimeout: 15000,
-      commandTimeout: 10000
+      logger: false
     })
     
     await client.connect()

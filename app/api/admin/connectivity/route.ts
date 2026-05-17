@@ -2,32 +2,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { validateSession, validateCsrfToken } from '@/lib/session'
 import { checkTcpConnectivity } from '@/lib/health'
 import { validateUrl } from '@/lib/ssrf'
-import { promises as dns } from 'dns'
-
-const PRIVATE_IP_RANGES = [
-  /^127\./,
-  /^10\./,
-  /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
-  /^192\.168\./,
-  /^169\.254\./,
-  /^0\./,
-  /^224\./,
-  /^240\./,
-]
-
-function isPrivateIP(ip: string): boolean {
-  return PRIVATE_IP_RANGES.some(regex => regex.test(ip))
-}
-
-async function resolveAndValidateHost(host: string): Promise<boolean> {
-  try {
-    const { address } = await dns.lookup(host)
-    if (!address) return false
-    return !isPrivateIP(address)
-  } catch {
-    return false
-  }
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -36,7 +10,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
     
-    const requestCsrf = request.headers.get('x-csrf-token')
+    const requestCsrf = request.headers.get('x-csrf-token') || undefined
     if (!validateCsrfToken(requestCsrf, csrfToken)) {
       return NextResponse.json({ error: 'Invalid CSRF token' }, { status: 403 })
     }
@@ -63,15 +37,6 @@ export async function POST(request: NextRequest) {
       const parts = target.split(':')
       host = parts[0]
       port = parts[1] ? parseInt(parts[1]) : 80
-      
-      if (isPrivateIP(host)) {
-        return NextResponse.json({ error: 'Invalid or restricted address' }, { status: 400 })
-      }
-      
-      const resolvedValid = await resolveAndValidateHost(host)
-      if (!resolvedValid) {
-        return NextResponse.json({ error: 'Invalid or restricted address' }, { status: 400 })
-      }
     }
     
     const result = await checkTcpConnectivity(host, port)

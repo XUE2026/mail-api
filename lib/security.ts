@@ -1,14 +1,9 @@
 import { kv } from '@vercel/kv'
 import { totp } from 'otplib'
-import { randomInt } from 'crypto'
 import { ENV } from './env'
 import { computeHmacSignature } from './crypto'
 
 const AUTH_ERROR = { error: 'Authentication failed' }
-
-export function generateSecureCode(): string {
-  return randomInt(0, 1000000).toString().padStart(6, '0')
-}
 
 export async function checkLoginRateLimit(ip: string): Promise<boolean> {
   const key = `ratelimit:login:${ip}`
@@ -78,7 +73,7 @@ export async function verifyRequestSignature(
 ): Promise<boolean> {
   const sortedQuery = Object.keys(query)
     .sort()
-    .map(k => `${k}=${query[k]}`)
+    .map(k => `${k}=${encodeURIComponent(query[k])}`)
     .join('&')
   
   const stringToSign = `${method}\n${path}\n${sortedQuery}\n${nonce}\n${timestamp}\n${body}`

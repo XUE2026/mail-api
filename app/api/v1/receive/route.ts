@@ -1,18 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { ImapFlow } from 'imapflow'
+import { kv } from '@vercel/kv'
 import { getValidApiKeys, getConfig } from '@/lib/config'
 import { validateApiTotp, checkNonce, validateTimestamp, verifyRequestSignature, validateConfigKey, getAuthError, checkApiRateLimit } from '@/lib/security'
-import { kv } from '@vercel/kv'
+
+export const runtime = 'nodejs'
+export const maxDuration = 60
 
 export async function GET(request: NextRequest) {
   try {
     const apiKey = request.headers.get('x-api-key')
     const apiTotp = request.headers.get('x-api-totp')
+    const configKey = request.headers.get('x-config-key')
     const nonce = request.headers.get('x-request-nonce')
     const timestamp = request.headers.get('x-request-timestamp')
     const signature = request.headers.get('x-request-signature')
     
-    if (!apiKey || !apiTotp || !nonce || !timestamp || !signature) {
+    if (!apiKey || !apiTotp || !configKey || !nonce || !timestamp || !signature) {
       return NextResponse.json(getAuthError(), { status: 401 })
     }
     
@@ -25,6 +29,10 @@ export async function GET(request: NextRequest) {
     }
     
     if (!validateApiTotp(apiTotp)) {
+      return NextResponse.json(getAuthError(), { status: 401 })
+    }
+    
+    if (!validateConfigKey(configKey)) {
       return NextResponse.json(getAuthError(), { status: 401 })
     }
     
@@ -47,14 +55,11 @@ export async function GET(request: NextRequest) {
     }
     
     const { searchParams } = new URL(request.url)
-    const configKey = searchParams.get('configKey')
-    if (!configKey || !validateConfigKey(configKey)) {
-      return NextResponse.json(getAuthError(), { status: 401 })
-    }
-    
-    const queryObj: Record<string, string> = {}
+    const queryObj: Record<string, string> = { configKey }
     searchParams.forEach((value, key) => {
-      queryObj[key] = value
+      if (key !== 'configKey') {
+        queryObj[key] = value
+      }
     })
     
     const signatureValid = await verifyRequestSignature(
@@ -73,11 +78,10 @@ export async function GET(request: NextRequest) {
     
     const rateLimitKey = `ratelimit:receive:${configKey}`
     const lastFetch = await kv.get<number>(rateLimitKey)
-    const now = Date.now()
-    if (lastFetch && (now - lastFetch) < 10000) {
+    if (lastFetch && (Date.now() - lastFetch) < 10000) {
       return NextResponse.json({ error: 'Too many requests, please try again later' }, { status: 429 })
     }
-    await kv.set(rateLimitKey, now, { ex: 60 })
+    await kv.set(rateLimitKey, Date.now(), { ex: 60 })
     
     const config = await getConfig()
     const mailbox = config.mailboxes.find(m => m.configKey === configKey)
@@ -96,16 +100,14 @@ export async function GET(request: NextRequest) {
         user: mailbox.imapUser,
         pass: mailbox.imapPass
       },
-      logger: false,
-      connectionTimeout: 15000,
-      commandTimeout: 10000
+      logger: false
     })
     
     await client.connect()
     const mailboxInfo = await client.mailboxOpen('INBOX')
     const messages = []
     
-    const total = mailboxInfo.exists
+    const total = mailboxInfo?.exists || 0
     const start = Math.max(1, total - (page - 1) * limit - limit + 1)
     const end = total - (page - 1) * limit
     

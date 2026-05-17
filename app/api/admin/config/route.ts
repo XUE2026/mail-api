@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
       apiKeys: config.apiKeys.map(k => ({
         ...k,
         key: maskApiKey(k.key),
-        fullKey: undefined
+        fullKey: k.status === 'active' && k.createdAt > Date.now() - 60000 ? k.key : undefined
       }))
     })
   } catch (error) {
@@ -42,7 +42,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
     
-    const requestCsrf = request.headers.get('x-csrf-token')
+    const requestCsrf = request.headers.get('x-csrf-token') || undefined
     if (!validateCsrfToken(requestCsrf, csrfToken)) {
       return NextResponse.json({ error: 'Invalid CSRF token' }, { status: 403 })
     }
@@ -87,9 +87,6 @@ export async function PUT(request: NextRequest) {
         }
         if (!validateEmail(mb.email)) {
           return NextResponse.json({ error: 'Invalid email' }, { status: 400 })
-        }
-        if (!mb.smtpPass || !mb.imapPass) {
-          return NextResponse.json({ error: 'SMTP and IMAP passwords are required' }, { status: 400 })
         }
       }
       
